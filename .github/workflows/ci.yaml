@@ -2,50 +2,22 @@ name: CI
 
 on:
   push:
-    # Only the refs that take direct pushes and have no pull request to trigger
-    # CI for them. Every other branch reaches CI through the pull_request
-    # trigger below; triggering on all pushes made a branch with an open PR run
-    # the whole matrix twice for the same commit (verified on sha 2e6afd5d44,
-    # which produced both a push run and a pull_request run), doubling demand on
-    # the runner pool.
+    # Fork-only narrowing of the upstream filter, which listed main and v2.1.x
+    # plus '2.*' / 'v2.*' tag pushes. This fork runs CI for exactly one commit
+    # on exactly one branch, so:
     #
-    # release/* is deliberately absent. Release branches are merged through PRs
-    # (#7744 head release/2.0.64, #7841 head release/2.0.65), so listing them
-    # would preserve exactly the duplication this filter removes: sha 194bd971
-    # produced a push run and a pull_request run 9 seconds apart. The PR run on
-    # the merge commit is the more relevant gate.
+    # - branches is this branch alone. Any other branch pushed here would queue
+    #   the whole matrix for source nobody asked about.
+    # - `tags` is gone entirely. This fork cuts no release tags, and every tag
+    #   pattern that fired upstream would queue another full matrix here for no
+    #   signal. Omitting the `tags` key means tag pushes do not trigger this
+    #   workflow at all, which is the intended behaviour here.
     #
-    # Branches pushed without a PR (instrospect, fastjson3, android5/android8,
-    # fix/* -- all verified to have zero open PRs) get no CI from this trigger.
-    # Validate them by opening a PR or via workflow_dispatch. Note this includes
-    # the branch carrying this very change: GitHub evaluates the pushed ref's
-    # own workflow file, so this filter cannot be smoke-tested by pushing to the
-    # branch that introduces it.
-    #
-    # `tags` must be listed explicitly: declaring only `branches` excludes tag
-    # pushes altogether, and a main-line release tag is the only full-matrix run
-    # between merge and publishing to Maven Central. Main-line tag pushes do run
-    # this workflow today -- run 30743811143 (head_branch=2.0.64), and 2.0.63 /
-    # 2.0.65 likewise. '2.*' covers those and future 2.x releases while
-    # excluding the legacy 0.x/1.x tags and the fastcode_*/bak_* scratch tags.
-    #
-    # Scope of that claim: GitHub evaluates the workflow file at the tagged
-    # commit, so this filter only governs tags cut on commits carrying this
-    # file. The *.android5 / *.android8 tags are cut on the android5 / android8
-    # branches, which still hold a different legacy workflow at this same path
-    # (`name: Java CI`, `ubuntu-20.04`, JDK 8/11/17). That runner label is
-    # retired, so those runs queue until GitHub's 24-hour cap cancels them --
-    # run 33637740678 (tag 2.0.65.android8) went 13:45:57 to 13:46:00 the next
-    # day, cancelled. Pre-existing gap, not a regression from this change;
-    # porting this file onto android5/android8 is separate work.
+    # pull_request and workflow_dispatch below are left exactly as upstream has
+    # them: harmless in this fork, and workflow_dispatch is the manual entry
+    # point this branch is validated with.
     branches:
-      - main
-      - v2.1.x
-    tags:
-      - '2.*'
-      - 'v2.*'  # the repo already uses a v-prefix for branches (v2.1.x), so a
-                # v-prefixed release tag is plausible; missing it fails silently
-                # -- no run at all -- on the release gate
+      - frank/fastjson7932-ci-validation-20261026
     # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#example-excluding-paths
     paths-ignore:
       - 'docs/**'
@@ -142,6 +114,25 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Pinned to the commit this branch exists to validate -- a checkout
+          # that followed the branch head could silently report on other source.
+          ref: 82fe8927aaf3cf67c503d30764798d62b999dd37
+          persist-credentials: false
+
+      - name: Assert checked-out source HEAD is 82fe8927aaf3cf67c503d30764798d62b999dd37
+        # Immediately after checkout, before anything builds: a run must never
+        # report green for source other than the pinned commit. `shell: bash`
+        # because windows-latest defaults to pwsh and this is shell test syntax.
+        shell: bash
+        run: |
+          expected=82fe8927aaf3cf67c503d30764798d62b999dd37
+          actual=$(git rev-parse HEAD)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::checkout produced HEAD $actual, expected $expected"
+            exit 1
+          fi
+          echo "Verified source HEAD $actual"
 
       - name: Cache Maven wrapper distribution
         # `setup-java`'s `cache: maven` only caches ~/.m2/repository. The wrapper
@@ -245,7 +236,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          # Pinned for the same reason as the test job's checkout, including
+          # coverage: a report must describe the pinned commit only.
+          ref: 82fe8927aaf3cf67c503d30764798d62b999dd37
+          persist-credentials: false
           fetch-depth: 0  # Fetch all history for better coverage analysis
+
+      - name: Assert checked-out source HEAD is 82fe8927aaf3cf67c503d30764798d62b999dd37
+        # Same guard as the test job: fail here rather than publish coverage for
+        # a commit this branch is not meant to validate.
+        shell: bash
+        run: |
+          expected=82fe8927aaf3cf67c503d30764798d62b999dd37
+          actual=$(git rev-parse HEAD)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::checkout produced HEAD $actual, expected $expected"
+            exit 1
+          fi
+          echo "Verified source HEAD $actual"
 
       - name: Cache Maven wrapper distribution
         uses: actions/cache@v4
